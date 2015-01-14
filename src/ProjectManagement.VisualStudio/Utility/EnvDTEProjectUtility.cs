@@ -18,6 +18,7 @@ using Microsoft.VisualStudio;
 using Microsoft.VisualStudio.Shell.Interop;
 using NuGet.Frameworks;
 using Microsoft.VisualStudio.Shell;
+using VsWebSite;
 
 namespace NuGet.ProjectManagement.VisualStudio
 {
@@ -259,6 +260,14 @@ namespace NuGet.ProjectManagement.VisualStudio
                 }
             }
             return name;
+        }
+
+        public static AssemblyReferences GetAssemblyReferences(EnvDTEProject project)
+        {
+            dynamic projectObj = project.Object;
+            var references = (AssemblyReferences)projectObj.References;
+            projectObj = null;
+            return references;
         }
 
         /// <summary>

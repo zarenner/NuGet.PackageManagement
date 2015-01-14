@@ -18,6 +18,12 @@ namespace NuGet.ProjectManagement.VisualStudio
             }
         }
 
+        public static bool FileExists(string root, string path)
+        {
+            path = GetFullPath(root, path);
+            return File.Exists(path);
+        }
+
         public static void EnsureDirectory(string root, string path)
         {
             path = GetFullPath(root, path);
