@@ -92,7 +92,7 @@ namespace NuGet.ProjectManagement
         {
             // Uri.EscapeDataString escapes slashes and white spaces.
             // path might contain "+", need to use Uri.UnescapeDataString to keep "+"
-            return Uri.UnescapeDataString(Uri.EscapeDataString(path).Replace("%5C", "/").Replace("%20", " "));
+            return Uri.EscapeDataString(path).Replace("%5C", "/").Replace("%20", " ").Replace("%2B","+");
         }
 
         public static string EscapePSPath(string path)
