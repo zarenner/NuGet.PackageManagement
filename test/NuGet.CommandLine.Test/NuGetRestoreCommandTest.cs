@@ -2,6 +2,7 @@
 using System.Globalization;
 using System.IO;
 using System.Net;
+using Test.Utility;
 using Xunit;
 
 namespace NuGet.CommandLine.Test
@@ -906,7 +907,6 @@ EndProject");
             var tempPath = Path.GetTempPath();
             var workingDirectory = Path.Combine(tempPath, Guid.NewGuid().ToString());
             var packageDirectory = Path.Combine(tempPath, Guid.NewGuid().ToString());
-            var mockServerEndPoint = "http://localhost:8901/";
 
             try
             {
@@ -925,50 +925,52 @@ EndProject");
   <package id=""testPackage1"" version=""1.1.0"" />
 </packages>");
 
-                var server = new MockServer(mockServerEndPoint);
-                bool getPackageByVersionIsCalled = false;
-                bool packageDownloadIsCalled = false;
+                using (var server = new MockServer())
+                {
+                    bool getPackageByVersionIsCalled = false;
+                    bool packageDownloadIsCalled = false;
 
-                server.Get.Add("/nuget/$metadata", r =>
-                   MockServerResource.NuGetV2APIMetadata);
-                server.Get.Add("/nuget/Packages(Id='testPackage1',Version='1.1.0')", r =>
-                    new Action<HttpListenerResponse>(response =>
-                    {
-                        getPackageByVersionIsCalled = true;
-                        response.ContentType = "application/atom+xml;type=entry;charset=utf-8";
-                        var odata = server.ToOData(package);
-                        MockServer.SetResponseContent(response, odata);
-                    }));
-
-                server.Get.Add("/package/testPackage1", r =>
-                    new Action<HttpListenerResponse>(response =>
-                    {
-                        packageDownloadIsCalled = true;
-                        response.ContentType = "application/zip";
-                        using (var stream = package.GetStream())
+                    server.Get.Add("/nuget/$metadata", r =>
+                       MockServerResource.NuGetV2APIMetadata);
+                    server.Get.Add("/nuget/Packages(Id='testPackage1',Version='1.1.0')", r =>
+                        new Action<HttpListenerResponse>(response =>
                         {
-                            var content = stream.ReadAllBytes();
-                            MockServer.SetResponseContent(response, content);
-                        }
-                    }));
+                            getPackageByVersionIsCalled = true;
+                            response.ContentType = "application/atom+xml;type=entry;charset=utf-8";
+                            var odata = server.ToOData(package);
+                            MockServer.SetResponseContent(response, odata);
+                        }));
 
-                server.Get.Add("/nuget", r => "OK");
+                    server.Get.Add("/package/testPackage1", r =>
+                        new Action<HttpListenerResponse>(response =>
+                        {
+                            packageDownloadIsCalled = true;
+                            response.ContentType = "application/zip";
+                            using (var stream = package.GetStream())
+                            {
+                                var content = stream.ReadAllBytes();
+                                MockServer.SetResponseContent(response, content);
+                            }
+                        }));
 
-                server.Start();
+                    server.Get.Add("/nuget", r => "OK");
 
-                // Act
-                var args = "restore packages.config -PackagesDirectory . -Source " + mockServerEndPoint + "nuget";
-                var r1 = CommandRunner.Run(
-                    nugetexe,
-                    workingDirectory,
-                    args,
-                    waitForExit: true);
-                server.Stop();
+                    server.Start();
 
-                // Assert
-                Assert.Equal(0, r1.Item1);
-                Assert.True(getPackageByVersionIsCalled);
-                Assert.True(packageDownloadIsCalled);
+                    // Act
+                    var args = "restore packages.config -PackagesDirectory . -Source " + server.Uri + "nuget";
+                    var r1 = CommandRunner.Run(
+                        nugetexe,
+                        workingDirectory,
+                        args,
+                        waitForExit: true);
+                    server.Stop();
+
+                    // Assert
+                    Assert.Equal(0, r1.Item1);
+                    Assert.True(getPackageByVersionIsCalled);
+                    Assert.True(packageDownloadIsCalled);
+                }
             }
             finally
             {
@@ -1111,6 +1113,94 @@ EndProject");
                 Directory.SetCurrentDirectory(currentDirectory);
                 Util.DeleteDirectory(Path.Combine(workingPath, @"..\..\GlobalPackages2"));
                 Util.DeleteDirectory(workingPath);
+            }
+        }
+
+        [Fact]
+        public void RestoreCommand_InvalidPackagesConfigFile()
+        {
+            var randomTestFolder = TestFilesystemUtility.CreateRandomTestFolder();
+
+            try
+            {
+                // Arrange
+                var nugetexe = Util.GetNuGetExePath();
+                var packagesConfigPath = Path.Combine(randomTestFolder, "packages.config");
+                var contents = @"blah <packages>
+  <package id=""packageA"" version=""1.1.0"" targetFramework=""net45"" />
+  <package id=""packageB"" version=""2.2.0"" targetFramework=""net45"" />
+</packages>";
+                File.WriteAllText(packagesConfigPath, contents);
+
+                var args = new string[]
+                {
+                    "restore",
+                    packagesConfigPath,
+                    "-PackagesDirectory",
+                    randomTestFolder
+                };
+
+                // Act
+                var r = CommandRunner.Run(
+                    nugetexe,
+                    Directory.GetCurrentDirectory(),
+                    string.Join(" ", args),
+                    waitForExit: true);
+
+                // Assert
+                Assert.NotEqual(0, r.Item1);
+                var error = r.Item3;
+                Assert.True(error.Contains("Error parsing packages.config file"));
+            }
+            finally
+            {
+                TestFilesystemUtility.DeleteRandomTestFolders(randomTestFolder);
+            }
+        }
+
+        [Fact]
+        public void RestoreCommand_InvalidSolutionFile()
+        {
+            var randomTestFolder = TestFilesystemUtility.CreateRandomTestFolder();
+
+            try
+            {
+                // Arrange
+                var nugetexe = Util.GetNuGetExePath();
+                var solutionFile = Path.Combine(randomTestFolder, "A.sln");
+                var contents = @"Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 2012
+Project(asdfasdf""{ FAE04EC0 - 301F - 11D3 - BF4B - 00C04F79EFBC}
+                "") = ""proj1"", ""proj1\proj1.csproj"", ""{ A04C59CC - 7622 - 4223 - B16B - CDF2ECAD438D}
+                ""
+EndProjectblah
+Project(""{ FAE04EC0 - 301F - 11D3 - BF4B - 00C04F79EFBC}
+                "") = ""proj2"", ""proj2\proj2.csproj"", ""{ 42641DAE - D6C4 - 49D4 - 92EA - 749D2573554A}
+                ""
+EndProject";
+                File.WriteAllText(solutionFile, contents);
+
+                var args = new string[]
+                {
+                    "restore",
+                    solutionFile,
+                };
+
+                // Act
+                var r = CommandRunner.Run(
+                    nugetexe,
+                    randomTestFolder,
+                    string.Join(" ", args),
+                    waitForExit: true);
+
+                // Assert
+                Assert.NotEqual(0, r.Item1);
+                var error = r.Item3;
+                Assert.True(error.Contains("Error parsing solution file"));
+            }
+            finally
+            {
+                TestFilesystemUtility.DeleteRandomTestFolders(randomTestFolder);
             }
         }
     }
