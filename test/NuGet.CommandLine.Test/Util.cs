@@ -6,6 +6,7 @@ using System.IO;
 using System.Net;
 using System.Text;
 using Moq;
+using Newtonsoft.Json.Linq;
 
 namespace NuGet.CommandLine.Test
 {
@@ -205,6 +206,73 @@ namespace NuGet.CommandLine.Test
             var targetDir = ConfigurationManager.AppSettings["TargetDir"] ?? Directory.GetCurrentDirectory();
             var nugetexe = Path.Combine(targetDir, "nuget.exe");
             return nugetexe;
+        }
+
+        public static bool IsSuccess(Tuple<int, string, string> result)
+        {
+            return result.Item1 == 0;
+        }
+
+        public static JObject CreateIndexJson()
+        {
+            return JObject.Parse(@"{
+                  ""version"": ""3.2.0"",
+                  ""resources"": [],
+                ""@context"": {
+                ""@vocab"": ""http://schema.nuget.org/services#"",
+                ""comment"": ""http://www.w3.org/2000/01/rdf-schema#comment""
+                    }}");
+        }
+
+        public static void AddFlatContainerResource(JObject index, MockServer server)
+        {
+            var resource = new JObject();
+            resource.Add("@id", string.Format("{0}flat", server.Uri));
+            resource.Add("@type", "PackageBaseAddress/3.0.0");
+
+            var array = index["resources"] as JArray;
+            array.Add(resource);
+        }
+
+        public static void AddRegistrationResource(JObject index, MockServer server)
+        {
+            var resource = new JObject();
+            resource.Add("@id", string.Format("{0}reg", server.Uri));
+            resource.Add("@type", "RegistrationsBaseUrl/3.0.0-beta");
+
+            var array = index["resources"] as JArray;
+            array.Add(resource);
+        }
+
+        public static void AddLegacyUrlResource(JObject index, MockServer serverV2)
+        {
+            var resource = new JObject();
+            resource.Add("@id", string.Format("{0}", serverV2.Uri));
+            resource.Add("@type", "LegacyGallery/2.0.0");
+
+            var array = index["resources"] as JArray;
+            array.Add(resource);
+        }
+
+        public static void AddPublishResource(JObject index, MockServer publishServer)
+        {
+            var resource = new JObject();
+            resource.Add("@id", string.Format("{0}push", publishServer.Uri));
+            resource.Add("@type", "PackagePublish/2.0.0");
+
+            var array = index["resources"] as JArray;
+            array.Add(resource);
+        }
+
+        public static void CreateConfigForGlobalPackagesFolder(string workingDirectory)
+        {
+            Util.CreateFile(workingDirectory, "nuget.config",
+                        @"<?xml version=""1.0"" encoding=""utf-8""?>
+                        <configuration>
+                          <config>
+                            <add key=""globalPackagesFolder"" value=""globalPackages"" />
+                          </config>
+                        </configuration>");
         }
     }
 }

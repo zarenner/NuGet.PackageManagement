@@ -5,20 +5,24 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
-using Microsoft.Build.Evaluation;
 using NuGet.Frameworks;
 using NuGet.Packaging.Core;
 using NuGet.ProjectManagement;
 
 namespace NuGet.Common
 {
-    public class MSBuildProjectSystem : IMSBuildNuGetProjectSystem
+    public class MSBuildProjectSystem : MSBuildUser, IMSBuildNuGetProjectSystem
     {
         private const string TargetName = "EnsureNuGetPackageBuildImports";
         private readonly string _projectDirectory;
 
-        public MSBuildProjectSystem(string projectFullPath, INuGetProjectContext projectContext)
+        public MSBuildProjectSystem(
+            string msbuildDirectory, 
+            string projectFullPath, 
+            INuGetProjectContext projectContext)
         {
+            LoadAssemblies(msbuildDirectory);
+
             _projectDirectory = Path.GetDirectoryName(projectFullPath);
             ProjectFullPath = _projectDirectory;
             Project = GetProject(projectFullPath);
@@ -51,7 +55,7 @@ namespace NuGet.Common
             }
         }
 
-        private Project Project { get; }
+        private dynamic Project { get; }
 
         public void AddBindingRedirects()
         {
@@ -81,9 +85,25 @@ namespace NuGet.Common
             }
 
             var targetRelativePath = PathUtility.GetRelativePath(PathUtility.EnsureTrailingSlash(_projectDirectory), targetFullPath);
+            var imports = Project.Xml.Imports;
+            bool notImported = true;
+            if (imports != null)
+            {
+                foreach (dynamic import in imports)
+                {
+                    if (targetRelativePath.Equals(import.Project, StringComparison.OrdinalIgnoreCase))
+                    {
+                        notImported = false;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                notImported = true;
+            }
 
-            if (Project.Xml.Imports == null ||
-                Project.Xml.Imports.All(import => !targetRelativePath.Equals(import.Project, StringComparison.OrdinalIgnoreCase)))
+            if (notImported)
             {
                 var pie = Project.Xml.AddImport(targetRelativePath);
                 pie.Condition = "Exists('" + targetRelativePath + "')";
@@ -140,9 +160,22 @@ namespace NuGet.Common
         {
             // some ItemTypes which starts with _ are added by various MSBuild tasks for their own purposes
             // and they do not represent content files of the projects. Therefore, we exclude them when checking for file existence.
-            return Project.Items.Any(
-                i => i.EvaluatedInclude.Equals(path, StringComparison.OrdinalIgnoreCase) &&
-                     (String.IsNullOrEmpty(i.ItemType) || i.ItemType[0] != '_'));
+            foreach (dynamic item in Project.Items)
+            {
+                // even though the type of Project.Items is ICollection<ProjectItem>, when dynamic is used
+                // the type of item is Dictionary.KeyValuePair, instead of ProjectItem. So another foreach
+                // is needed to iterate through all project items.
+                foreach (dynamic i in item.Value)
+                {
+                    if (i.EvaluatedInclude.Equals(path, StringComparison.OrdinalIgnoreCase) &&
+                         (String.IsNullOrEmpty(i.ItemType) || i.ItemType[0] != '_'))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         public IEnumerable<string> GetDirectories(string path)
@@ -159,13 +192,14 @@ namespace NuGet.Common
 
         public IEnumerable<string> GetFullPaths(string fileName)
         {
-            return Project.Items.Where(
-                projectItem =>
+            foreach (dynamic projectItem in Project.Items)
+            {
+                var itemFileName = Path.GetFileName(projectItem.EvaluatedInclude);
+                if (string.Equals(fileName, itemFileName, StringComparison.OrdinalIgnoreCase))
                 {
-                    var itemFileName = Path.GetFileName(projectItem.EvaluatedInclude);
-                    return string.Equals(fileName, itemFileName, StringComparison.OrdinalIgnoreCase);
-                })
-                .Select(projectItem => Path.Combine(_projectDirectory, projectItem.EvaluatedInclude));
+                    yield return Path.Combine(_projectDirectory, projectItem.EvaluatedInclude);
+                }
+            }
         }
 
         public dynamic GetPropertyValue(string propertyName)
@@ -199,8 +233,15 @@ namespace NuGet.Common
             if (Project.Xml.Imports != null)
             {
                 // search for this import statement and remove it
-                var importElement = Project.Xml.Imports.FirstOrDefault(
-                    import => targetRelativePath.Equals(import.Project, StringComparison.OrdinalIgnoreCase));
+                dynamic importElement = null;
+                foreach (dynamic import in Project.Xml.Imports)
+                {
+                    if (targetRelativePath.Equals(import.Project, StringComparison.OrdinalIgnoreCase))
+                    {
+                        importElement = import;
+                        break;
+                    }
+                }
 
                 if (importElement != null)
                 {
@@ -215,7 +256,7 @@ namespace NuGet.Common
 
         public void RemoveReference(string name)
         {
-            ProjectItem assemblyReference = GetReference(name);
+            dynamic assemblyReference = GetReference(name);
             if (assemblyReference != null)
             {
                 Project.RemoveItem(assemblyReference);
@@ -232,12 +273,18 @@ namespace NuGet.Common
             NuGetProjectContext = nuGetProjectContext;
         }
 
-        private IEnumerable<ProjectItem> GetItems(string itemType, string name)
+        private IEnumerable<dynamic> GetItems(string itemType, string name)
         {
-            return Project.GetItems(itemType).Where(i => i.EvaluatedInclude.StartsWith(name, StringComparison.OrdinalIgnoreCase));
+            foreach (dynamic i in Project.GetItems(itemType))
+            {
+                if (i.EvaluatedInclude.StartsWith(name, StringComparison.OrdinalIgnoreCase))
+                {
+                    yield return i;
+                }
+            }
         }
 
-        private ProjectItem GetReference(string name)
+        private dynamic GetReference(string name)
         {
             name = Path.GetFileNameWithoutExtension(name);
             return GetItems("Reference", name)
@@ -249,8 +296,15 @@ namespace NuGet.Common
         private void AddEnsureImportedTarget(string targetsPath)
         {
             // get the target
-            var targetElement = Project.Xml.Targets.FirstOrDefault(
-                target => target.Name.Equals(TargetName, StringComparison.OrdinalIgnoreCase));
+            dynamic targetElement = null;
+            foreach (dynamic target in Project.Xml.Targets)
+            {
+                if (target.Name.Equals(TargetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    targetElement = target;
+                    break;
+                }
+            }
 
             // if the target does not exist, create the target
             if (targetElement == null)
@@ -278,16 +332,30 @@ namespace NuGet.Common
 
         private void RemoveEnsureImportedTarget(string targetsPath)
         {
-            var targetElement = Project.Xml.Targets.FirstOrDefault(
-                target => string.Equals(target.Name, targetsPath, StringComparison.OrdinalIgnoreCase));
+            dynamic targetElement = null;
+            foreach (dynamic target in Project.Xml.Targets)
+            {
+                if (string.Equals(target.Name, targetsPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    targetElement = target;
+                    break;
+                }
+            }
             if (targetElement == null)
             {
                 return;
             }
 
             string errorCondition = "!Exists('" + targetsPath + "')";
-            var taskElement = targetElement.Tasks.FirstOrDefault(
-                task => string.Equals(task.Condition, errorCondition, StringComparison.OrdinalIgnoreCase));
+            dynamic taskElement = null;
+            foreach (dynamic task in targetElement.Tasks)
+            {
+                if (string.Equals(task.Condition, errorCondition, StringComparison.OrdinalIgnoreCase))
+                {
+                    taskElement = task;
+                    break;
+                }
+            }
             if (taskElement == null)
             {
                 return;
@@ -300,9 +368,22 @@ namespace NuGet.Common
             }
         }
 
-        private static Project GetProject(string projectFile)
+        private dynamic GetProject(string projectFile)
         {
-            return ProjectCollection.GlobalProjectCollection.GetLoadedProjects(projectFile).FirstOrDefault() ?? new Project(projectFile);
+            dynamic globalProjectCollection = _projectCollectionType
+                .GetProperty("GlobalProjectCollection")
+                .GetMethod
+                .Invoke(null, new object[] { });
+            var loadedProjects = globalProjectCollection.GetLoadedProjects(projectFile);
+            if (loadedProjects.Count > 0)
+            {
+                return loadedProjects[0];
+            }
+
+            var project = Activator.CreateInstance(
+                _projectType,
+                new object[] { projectFile });
+            return project;
         }
     }
 }
